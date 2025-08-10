@@ -1,0 +1,321 @@
+XRD Pattern Analysis Tools for Doped ZnO Thin Films
+==================================================
+
+This module contains analysis tools for X-ray diffraction patterns
+of aluminum and boron-doped zinc oxide thin films on silicon substrates.
+
+Related Publication:
+Jabbar, R. H., Hilal, I. H., Mutter, M. M., et al. (2023). 
+"Comparison of the structural characteristics of Al and B company 
+doped ZnO thin films dropped on Si, Si pulsed by laser, and porous silicon"
+AIP Conference Proceedings 2414, 030001. DOI: 10.1063/5.0114811
+
+Author: Dr. Israa Hadi Hilal
+Institution: Scientific Research Commission, Baghdad, Iraq
+Scopus ID: 57210600605
+GitHub: @is83-hadi
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks, peak_widths
+from scipy.optimize import curve_fit
+import pandas as pd
+import warnings
+
+class ZnOAnalyzer:
+    """
+    Main analysis class for ZnO thin film XRD patterns.
+    
+    This class provides methods for peak identification, structural
+    parameter calculation, and comparative analysis of doped ZnO films
+    on different silicon substrates.
+    """
+    
+    def __init__(self):
+        """Initialize analyzer with ZnO reference data."""
+        # Standard ZnO lattice parameters (JCPDS 36-1451)
+        self.zno_standard = {
+            'a': 3.2498,  # Å, hexagonal a-parameter
+            'c': 5.2066,  # Å, hexagonal c-parameter
+            'space_group': 'P63mc',
+            'peaks': {
+                '(100)': 31.77,
+                '(002)': 34.42,
+                '(101)': 36.25,
+                '(102)': 47.54,
+                '(110)': 56.60,
+                '(103)': 62.86,
+                '(200)': 66.38,
+                '(112)': 67.96,
+                '(201)': 69.09
+            }
+        }
+        
+        # X-ray wavelength (Cu Kα)
+        self.wavelength = 1.5406  # Å
+        
+    def load_xrd_data(self, filepath, delimiter=None, skiprows=0):
+        """
+        Load XRD data from text file.
+        
+        Parameters:
+        -----------
+        filepath : str
+            Path to the XRD data file
+        delimiter : str, optional
+            Column delimiter (default: None for whitespace)
+        skiprows : int, optional
+            Number of rows to skip at the beginning
+            
+        Returns:
+        --------
+        tuple : (two_theta, intensity)
+            2θ angles and corresponding intensities
+        """
+        try:
+            data = np.loadtxt(filepath, delimiter=delimiter, skiprows=skiprows)
+            if data.shape[1] < 2:
+                raise ValueError("Data file must contain at least 2 columns (2θ, intensity)")
+            
+            two_theta = data[:, 0]
+            intensity = data[:, 1]
+            
+            # Basic data validation
+            if np.any(two_theta < 0) or np.any(two_theta > 90):
+                warnings.warn("2θ values outside typical range (0-90°)")
+            if np.any(intensity < 0):
+                warnings.warn("Negative intensity values detected")
+                
+            return two_theta, intensity
+            
+        except Exception as e:
+            print(f"Error loading XRD data: {e}")
+            return None, None
+    
+    def find_peaks_advanced(self, two_theta, intensity, prominence=0.1, 
+                           distance=5, height_threshold=0.05):
+        """
+        Advanced peak detection for XRD patterns.
+        
+        Parameters:
+        -----------
+        two_theta : array-like
+            2θ angles
+        intensity : array-like
+            Intensity values
+        prominence : float, optional
+            Minimum prominence for peak detection
+        distance : int, optional
+            Minimum distance between peaks (in data points)
+        height_threshold : float, optional
+            Minimum relative height for peaks
+            
+        Returns:
+        --------
+        dict : Peak analysis results
+        """
+        # Normalize intensity
+        intensity_norm = (intensity - np.min(intensity)) / (np.max(intensity) - np.min(intensity))
+        
+        # Find peaks
+        peaks, properties = find_peaks(
+            intensity_norm, 
+            prominence=prominence,
+            distance=distance,
+            height=height_threshold
+        )
+        
+        # Calculate peak widths (FWHM)
+        widths_data = peak_widths(intensity_norm, peaks, rel_height=0.5)
+        
+        # Convert width indices to 2θ degrees
+        fwhm_degrees = []
+        for i, width_idx in enumerate(widths_data[0]):
+            if peaks[i] + width_idx/2 < len(two_theta) and peaks[i] - width_idx/2 >= 0:
+                left_idx = int(peaks[i] - width_idx/2)
+                right_idx = int(peaks[i] + width_idx/2)
+                fwhm = two_theta[right_idx] - two_theta[left_idx]
+                fwhm_degrees.append(fwhm)
+            else:
+                fwhm_degrees.append(np.nan)
+        
+        peak_data = {
+            'indices': peaks,
+            'positions': two_theta[peaks],
+            'intensities': intensity[peaks],
+            'normalized_intensities': intensity_norm[peaks],
+            'prominences': properties['prominences'],
+            'fwhm_degrees': np.array(fwhm_degrees)
+        }
+        
+        return peak_data
+    
+    def calculate_crystallite_size(self, peak_position, fwhm, K=0.89):
+        """
+        Calculate crystallite size using Scherrer equation.
+        
+        D = Kλ / (β cos θ)
+        
+        Parameters:
+        -----------
+        peak_position : float
+            Peak position in 2θ degrees
+        fwhm : float
+            Full width at half maximum in degrees
+        K : float, optional
+            Shape factor (default: 0.89 for spherical crystals)
+            
+        Returns:
+        --------
+        float : Crystallite size in nanometers
+        """
+        if np.isnan(fwhm) or fwhm <= 0:
+            return np.nan
+            
+        theta_rad = np.radians(peak_position / 2)
+        beta_rad = np.radians(fwhm)
+        
+        # Scherrer equation
+        crystallite_size = (K * self.wavelength) / (beta_rad * np.cos(theta_rad))
+        
+        return crystallite_size * 10  # Convert Å to nm
+    
+    def calculate_lattice_parameters(self, peak_positions):
+        """
+        Calculate lattice parameters for hexagonal ZnO structure.
+        
+        For hexagonal system:
+        1/d² = 4/3 * (h²+hk+k²)/a² + l²/c²
+        
+        Parameters:
+        -----------
+        peak_positions : array-like
+            Peak positions in 2θ degrees
+            
+        Returns:
+        --------
+        dict : Lattice parameters
+        """
+        results = {}
+        
+        # Calculate d-spacings from peak positions
+        d_spacings = {}
+        for pos in peak_positions:
+            theta_rad = np.radians(pos / 2)
+            d = self.wavelength / (2 * np.sin(theta_rad))
+            d_spacings[pos] = d
+        
+        # Find specific reflections for parameter calculation
+        tolerance = 1.0  # degrees
+        
+        # (002) reflection for c-parameter
+        target_002 = 34.42
+        matches_002 = [pos for pos in peak_positions if abs(pos - target_002) < tolerance]
+        if matches_002:
+            best_match = min(matches_002, key=lambda x: abs(x - target_002))
+            d_002 = d_spacings[best_match]
+            c_param = 2 * d_002
+            results['c'] = c_param
+            results['c_peak_position'] = best_match
+        
+        # (100) reflection for a-parameter
+        target_100 = 31.77
+        matches_100 = [pos for pos in peak_positions if abs(pos - target_100) < tolerance]
+        if matches_100:
+            best_match = min(matches_100, key=lambda x: abs(x - target_100))
+            d_100 = d_spacings[best_match]
+            a_param = 2 * d_100 / np.sqrt(3)
+            results['a'] = a_param
+            results['a_peak_position'] = best_match
+        
+        # Calculate unit cell volume if both parameters available
+        if 'a' in results and 'c' in results:
+            volume = np.sqrt(3) / 2 * results['a']**2 * results['c']
+            results['unit_cell_volume'] = volume
+        
+        return results
+    
+    def analyze_doping_effect(self, reference_peaks, doped_peaks, peak_labels=None):
+        """
+        Analyze the effect of doping on peak positions.
+        
+        Parameters:
+        -----------
+        reference_peaks : array-like
+            Peak positions for undoped reference
+        doped_peaks : array-like
+            Peak positions for doped sample
+        peak_labels : list, optional
+            Labels for peaks
+            
+        Returns:
+        --------
+        dict : Doping effect analysis
+        """
+        if len(reference_peaks) != len(doped_peaks):
+            raise ValueError("Reference and doped peak arrays must have same length")
+        
+        shifts = {}
+        
+        for i, (ref_pos, doped_pos) in enumerate(zip(reference_peaks, doped_peaks)):
+            label = peak_labels[i] if peak_labels else f'peak_{i+1}'
+            
+            shift_degrees = doped_pos - ref_pos
+            shift_percent = (shift_degrees / ref_pos) * 100
+            
+            # Calculate strain using the shift
+            strain = -shift_degrees / (4 * np.tan(np.radians(ref_pos / 2)))
+            
+            shifts[label] = {
+                'reference_position': ref_pos,
+                'doped_position': doped_pos,
+                'shift_degrees': shift_degrees,
+                'shift_percent': shift_percent,
+                'strain': strain
+            }
+        
+        return shifts
+    
+    def plot_comparison(self, data_dict, title="XRD Pattern Comparison", 
+                       figsize=(12, 8), save_path=None, show_standards=True):
+        """
+        Plot multiple XRD patterns for comparison.
+        
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary with format {'label': (2theta, intensity)}
+        title : str, optional
+            Plot title
+        figsize : tuple, optional
+            Figure size
+        save_path : str, optional
+            Path to save the plot
+        show_standards : bool, optional
+            Whether to show standard ZnO peak positions
+        """
+        plt.figure(figsize=figsize)
+        
+        colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+        
+        max_intensity = 0
+        for label, (two_theta, intensity) in data_dict.items():
+            max_intensity = max(max_intensity, np.max(intensity))
+        
+        for i, (label, (two_theta, intensity)) in enumerate(data_dict.items()):
+            # Normalize and offset for clarity
+            intensity_norm = intensity / max_intensity
+            offset = i * 0.3
+            
+            plt.plot(two_theta, intensity_norm + offset, 
+                    label=label, color=colors[i % len(colors)], 
+                    linewidth=1.5, alpha=0.8)
+        
+        plt.xlabel('2θ (degrees)', fontsize=12, fontweight='bold')
+        plt.ylabel('Normalized Intensity (a.u.)', fontsize=12, fontweight='bold')
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.legend(loc='upper right')
+        plt.grid(True, alpha=0.3)
+        
+       
